@@ -1,0 +1,114 @@
+==========
+Cod 2.0 -> Cód referente a questão 4.2
+==========
+import machine
+import ssd1306
+import utime
+
+# --- SEÇÃO DO GERADOR DE PWM ---
+INITIAL_FREQ = 1000
+INITIAL_DUTY_PERCENT = 50.0
+MIN_FREQ = 1
+MAX_FREQ = 20000
+FREQ_STEP_COARSE = 100
+MIN_DUTY_PERCENT = 0.0
+MAX_DUTY_PERCENT = 100.0
+DUTY_STEP = 10.0
+FREQ_STEP_FINE = 1
+CENTER_ADC = 32768
+DEAD_ZONE_PERCENT = 0.30 
+DEAD_ZONE_WIDTH = int(65535 * (DEAD_ZONE_PERCENT / 2))
+LOWER_THRESHOLD = CENTER_ADC - DEAD_ZONE_WIDTH
+UPPER_THRESHOLD = CENTER_ADC + DEAD_ZONE_WIDTH
+CONTROL_DELAY_MS = 100
+
+# --- SEÇÃO DO MEDIDOR DE FREQUÊNCIA E DUTY CYCLE ---
+last_tick = [0]
+high_time = [0]
+low_time = [0]
+edge_count = [0]
+
+def measure_pulse(pin):
+    current_tick = utime.ticks_us()
+    delta = utime.ticks_diff(current_tick, last_tick[0])
+    if pin.value() == 1:
+        low_time[0] += delta
+    else:
+        high_time[0] += delta
+    edge_count[0] += 1
+    last_tick[0] = current_tick
+
+# --- INICIALIZAÇÃO DOS COMPONENTES ---
+i2c = machine.I2C(1, scl=machine.Pin(3), sda=machine.Pin(2))
+oled = ssd1306.SSD1306_I2C(128, 64, i2c)
+pwm_out = machine.PWM(machine.Pin(0))
+adc_x = machine.ADC(machine.Pin(27))
+adc_y = machine.ADC(machine.Pin(26))
+btn_a = machine.Pin(10, machine.Pin.IN, machine.Pin.PULL_UP)
+btn_b = machine.Pin(5, machine.Pin.IN, machine.Pin.PULL_UP)
+
+# #######################################################
+# ################ ALTERAÇÃO IMPORTANTE AQUI ################
+# MUDAMOS A ENTRADA DO MEDIDOR PARA O PINO GPIO1
+freq_pin_in = machine.Pin(1, machine.Pin.IN) 
+# #######################################################
+freq_pin_in.irq(trigger=machine.Pin.IRQ_RISING | machine.Pin.IRQ_FALLING, handler=measure_pulse)
+
+# --- VARIÁVEIS DE ESTADO E CONTROLE ---
+frequency = INITIAL_FREQ
+duty_cycle_percent = INITIAL_DUTY_PERCENT
+last_display_update = 0
+display_update_interval = 500
+
+# --- LOOP PRINCIPAL ---
+while True:
+    # Lógica do Gerador PWM...
+    raw_x = adc_x.read_u16()
+    raw_y = adc_y.read_u16()
+
+    if raw_x > UPPER_THRESHOLD: frequency += FREQ_STEP_COARSE
+    elif raw_x < LOWER_THRESHOLD: frequency -= FREQ_STEP_COARSE
+
+    if raw_y < LOWER_THRESHOLD: duty_cycle_percent += DUTY_STEP
+    elif raw_y > UPPER_THRESHOLD: duty_cycle_percent -= DUTY_STEP
+        
+    if btn_a.value() == 0: frequency += FREQ_STEP_FINE
+    elif btn_b.value() == 0: frequency -= FREQ_STEP_FINE
+
+    if frequency > MAX_FREQ: frequency = MAX_FREQ
+    if frequency < MIN_FREQ: frequency = MIN_FREQ
+    if duty_cycle_percent > MAX_DUTY_PERCENT: duty_cycle_percent = MAX_DUTY_PERCENT
+    if duty_cycle_percent < MIN_DUTY_PERCENT: duty_cycle_percent = MIN_DUTY_PERCENT
+
+    duty_cycle_u16 = int((duty_cycle_percent / 100.0) * 65535)
+    pwm_out.freq(frequency)
+    pwm_out.duty_u16(duty_cycle_u16)
+        
+    # Lógica do Medidor e Display...
+    current_time = utime.ticks_ms()
+    if utime.ticks_diff(current_time, last_display_update) > display_update_interval:
+        irq_state = machine.disable_irq()
+        h_time, l_time, edges = high_time[0], low_time[0], edge_count[0]
+        high_time[0], low_time[0], edge_count[0] = 0, 0, 0
+        machine.enable_irq(irq_state)
+
+        measured_freq = 0
+        measured_duty = 0
+        total_time = h_time + l_time
+        num_cycles = edges / 2
+
+        if total_time > 0 and num_cycles > 0:
+            avg_period_us = total_time / num_cycles
+            measured_freq = 1000000 / avg_period_us
+            measured_duty = (h_time / total_time) * 100
+
+        oled.fill(0)
+        oled.text("Medidor Freq/Duty", 0, 5)
+        oled.text("----------------", 0, 15)
+        oled.text(f"Freq: {measured_freq:.1f} Hz", 0, 30)
+        oled.text(f"Duty: {measured_duty:.1f} %", 0, 45)
+        oled.show()
+        
+        last_display_update = current_time
+
+    utime.sleep_ms(CONTROL_DELAY_MS)
