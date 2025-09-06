@@ -1,0 +1,118 @@
+===========
+Código 2.0 - Versão Final
+===========
+O programa seguiu a seguinte lógica de implementação:
+- Eixo X do Joystick controla a frequência do PWM, alterando o valor de 100 em 100Hz
+- Eixo Y do Joystick controla o Duty Cycle do PWM, alterando o valor de 1 em 1%
+- Botões A e B controlam a frequência a passos de 1%
+=========================================================
+import machine
+import ssd1306
+import utime
+
+# --- CONSTANTES DE CONFIGURAÇÃO ---
+# Valores Iniciais
+INITIAL_FREQ = 1000
+INITIAL_DUTY_PERCENT = 50.0
+
+# Limites e Passos de Ajuste (Joystick)
+MIN_FREQ = 1
+MAX_FREQ = 20000
+FREQ_STEP_COARSE = 100  # Ajuste "grosseiro" do joystick
+
+MIN_DUTY_PERCENT = 0.0
+MAX_DUTY_PERCENT = 100.0
+DUTY_STEP = 1.0
+
+# Passo de Ajuste (Botões)
+FREQ_STEP_FINE = 1  # Ajuste "fino" dos botões
+
+# Configuração da Zona Morta (Dead Zone)
+CENTER_ADC = 32768
+DEAD_ZONE_PERCENT = 0.30 
+DEAD_ZONE_WIDTH = int(65535 * (DEAD_ZONE_PERCENT / 2))
+LOWER_THRESHOLD = CENTER_ADC - DEAD_ZONE_WIDTH
+UPPER_THRESHOLD = CENTER_ADC + DEAD_ZONE_WIDTH
+
+# Atraso para controlar a velocidade do incremento (em milissegundos)
+CONTROL_DELAY_MS = 100
+
+# --- INICIALIZAÇÃO DOS COMPONENTES ---
+# 1. Display OLED
+i2c = machine.I2C(1, scl=machine.Pin(3), sda=machine.Pin(2))
+try:
+    oled = ssd1306.SSD1306_I2C(128, 64, i2c)
+    oled_found = True
+except OSError:
+    print("Erro: Display OLED não encontrado.")
+    oled_found = False
+
+# 2. Saída PWM no GPIO0
+pwm_out = machine.PWM(machine.Pin(0))
+
+# 3. Entradas Analógicas (Joystick)
+adc_x = machine.ADC(machine.Pin(27)) # Frequência
+adc_y = machine.ADC(machine.Pin(26)) # Duty Cycle
+
+# 4. Entradas Digitais (Botões para ajuste fino)
+btn_a = machine.Pin(10, machine.Pin.IN, machine.Pin.PULL_UP) # Aumenta 1 Hz
+btn_b = machine.Pin(5, machine.Pin.IN, machine.Pin.PULL_UP)  # Diminui 1 Hz
+
+# --- VARIÁVEIS DE ESTADO ---
+frequency = INITIAL_FREQ
+duty_cycle_percent = INITIAL_DUTY_PERCENT
+
+# --- LOOP PRINCIPAL ---
+while True:
+    # --- LEITURA E PROCESSAMENTO DOS INPUTS ---
+    raw_x = adc_x.read_u16()
+    raw_y = adc_y.read_u16()
+
+    # --- LÓGICA DE CONTROLE ---
+    
+    # 1. Controle Grosseiro da Frequência (Eixo X)
+    if raw_x > UPPER_THRESHOLD:
+        frequency += FREQ_STEP_COARSE
+    elif raw_x < LOWER_THRESHOLD:
+        frequency -= FREQ_STEP_COARSE
+
+    # 2. Controle do Duty Cycle (Eixo Y)
+    if raw_y < LOWER_THRESHOLD:
+        duty_cycle_percent += DUTY_STEP
+    elif raw_y > UPPER_THRESHOLD:
+        duty_cycle_percent -= DUTY_STEP
+        
+    # 3. Controle Fino da Frequência (Botões A e B)
+    if btn_a.value() == 0: # Botão A pressionado
+        frequency += FREQ_STEP_FINE
+    elif btn_b.value() == 0: # Botão B pressionado
+        frequency -= FREQ_STEP_FINE
+
+    # --- LIMITES DE SEGURANÇA (CLAMPING) ---
+    if frequency > MAX_FREQ: frequency = MAX_FREQ
+    if frequency < MIN_FREQ: frequency = MIN_FREQ
+    
+    if duty_cycle_percent > MAX_DUTY_PERCENT: duty_cycle_percent = MAX_DUTY_PERCENT
+    if duty_cycle_percent < MIN_DUTY_PERCENT: duty_cycle_percent = MIN_DUTY_PERCENT
+
+    # --- ATUALIZAÇÃO DAS SAÍDAS ---
+    
+    # 1. Converte o percentual do duty cycle para o valor u16
+    duty_cycle_u16 = int((duty_cycle_percent / 100.0) * 65535)
+
+    # 2. Configura o hardware PWM
+    pwm_out.freq(frequency)
+    pwm_out.duty_u16(duty_cycle_u16)
+        
+    # 3. Exibe informações no Display OLED
+    if oled_found:
+        oled.fill(0)
+        oled.text("Gerador PWM", 20, 5)
+        oled.text("------------", 12, 15)
+        oled.text(f"Freq: {frequency} Hz", 0, 30)
+        oled.text(f"Duty: {duty_cycle_percent:.1f} %", 0, 45)
+        oled.show()
+
+    # Atraso para tornar o controle suave
+    utime.sleep_ms(CONTROL_DELAY_MS)
+
